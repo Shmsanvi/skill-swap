@@ -1,51 +1,69 @@
 import { useState, useEffect } from 'react'
-import { getProfile, saveProfile, getReadiness } from './api'
+import { supabase } from './supabase'
+import { getReadiness, saveProfile } from './api'
+import Auth from './components/Auth'
 import Graph from './components/Graph'
 import Sidebar from './components/Sidebar'
 import ProfileTab from './components/ProfileTab'
 import DiscoverTab from './components/DiscoverTab'
-
-function getSessionId() {
-  let id = localStorage.getItem('skillswap-session')
-  if (!id) { id = crypto.randomUUID(); localStorage.setItem('skillswap-session', id) }
-  return id
-}
+import Dashboard from './components/Dashboard'
 
 export default function App() {
+  const [session, setSession] = useState(null)
+  const [loading, setLoading] = useState(true)
   const [tab, setTab] = useState('graph')
   const [careers, setCareers] = useState([])
   const [userSkills, setUserSkills] = useState([])
   const [selectedCareer, setSelectedCareer] = useState(null)
-  const [loading, setLoading] = useState(true)
-  const sessionId = getSessionId()
+
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session)
+      setLoading(false)
+    })
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session)
+    })
+    return () => subscription.unsubscribe()
+  }, [])
+
+  useEffect(() => {
+    if (session) refresh()
+  }, [session])
 
   async function refresh() {
-    const [profileRes, readinessRes] = await Promise.all([
-      getProfile(sessionId),
-      getReadiness(sessionId)
-    ])
-    setUserSkills(profileRes.data.skills || [])
-    setCareers(readinessRes.data)
-    if (!selectedCareer && readinessRes.data.length) setSelectedCareer(readinessRes.data[0])
+    const userId = session.user.id
+    // Make sure profile exists first
+    await saveProfile(userId, userSkills)
+    const res = await getReadiness(userId)
+    setCareers(res.data)
+    if (!selectedCareer && res.data.length) setSelectedCareer(res.data[0])
     setLoading(false)
   }
-
-  useEffect(() => { refresh() }, [])
 
   async function handleToggleSkill(skill) {
     const next = userSkills.includes(skill)
       ? userSkills.filter(s => s !== skill)
       : [...userSkills, skill]
     setUserSkills(next)
-    await saveProfile(sessionId, next)
+    await saveProfile(session.user.id, next)
     await refresh()
   }
 
+  async function handleLogout() {
+    await supabase.auth.signOut()
+    setSession(null)
+    setCareers([])
+    setUserSkills([])
+  }
+
   if (loading) return (
-    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', background: '#0a0a14', color: '#555', fontFamily: 'DM Sans, sans-serif' }}>
-      Loading Skill-Swap...
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', background: '#0a0a14', color: '#555', fontFamily: 'DM Sans, sans-serif', fontSize: 16 }}>
+      Loading...
     </div>
   )
+
+  if (!session) return <Auth />
 
   return (
     <div style={{ minHeight: '100vh', background: '#0a0a14', fontFamily: 'DM Sans, sans-serif', color: '#fff' }}>
@@ -56,24 +74,34 @@ export default function App() {
           <span style={{ fontWeight: 700, fontSize: 18 }}>Universal Skill-Swap</span>
         </div>
         <div style={{ display: 'flex', gap: 4 }}>
-          {['graph','profile','discover'].map(t => (
+          {['graph', 'profile', 'discover', 'dashboard'].map(t => (
             <button key={t} onClick={() => setTab(t)} style={{
-              padding: '7px 18px', borderRadius: 8, border: 'none', background: tab === t ? 'rgba(124,111,251,0.15)' : 'transparent',
-              color: tab === t ? '#7C6FFB' : '#555', fontFamily: 'DM Sans, sans-serif', fontSize: 13,
+              padding: '7px 18px', borderRadius: 8, border: 'none',
+              background: tab === t ? 'rgba(124,111,251,0.15)' : 'transparent',
+              color: tab === t ? '#7C6FFB' : '#555',
+              fontFamily: 'DM Sans, sans-serif', fontSize: 13,
               fontWeight: tab === t ? 600 : 400, cursor: 'pointer', textTransform: 'capitalize'
             }}>{t}</button>
           ))}
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <span style={{ fontSize: 13, color: '#555' }}>{session.user.email}</span>
+          <button onClick={handleLogout} style={{
+            padding: '7px 16px', borderRadius: 8, border: '1px solid rgba(255,255,255,0.1)',
+            background: 'transparent', color: '#888', fontSize: 13, cursor: 'pointer', fontFamily: 'DM Sans, sans-serif'
+          }}>Log out</button>
         </div>
       </div>
 
       {tab === 'graph' && (
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 340px', height: 'calc(100vh - 65px)' }}>
           <Graph careers={careers} userSkills={userSkills} selectedCareer={selectedCareer} onSelectCareer={setSelectedCareer} />
-          <Sidebar career={selectedCareer} userSkills={userSkills} sessionId={sessionId} onRefresh={refresh} />
+          <Sidebar career={selectedCareer} userSkills={userSkills} sessionId={session.user.id} onRefresh={refresh} />
         </div>
       )}
-      {tab === 'profile' && <ProfileTab careers={careers} userSkills={userSkills} onToggle={handleToggleSkill} sessionId={sessionId} onRefresh={refresh} />}
+      {tab === 'profile' && <ProfileTab careers={careers} userSkills={userSkills} onToggle={handleToggleSkill} sessionId={session.user.id} onRefresh={refresh} />}
       {tab === 'discover' && <DiscoverTab careers={careers} onSelect={c => { setSelectedCareer(c); setTab('graph') }} />}
+      {tab === 'dashboard' && <Dashboard userId={session.user.id} careers={careers} userSkills={userSkills} />}
     </div>
   )
 }
